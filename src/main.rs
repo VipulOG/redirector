@@ -18,13 +18,27 @@ pub type Bangs = Vec<Bang>;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Bang {
-    pub c: Option<Category>,
-    pub d: String,
-    pub r: i64,
-    pub s: String,
-    pub sc: Option<String>,
-    pub t: String,
-    pub u: String,
+    /// The category of the bang command (e.g., "Tech", "Entertainment").
+    #[serde(rename = "c")]
+    pub category: Option<Category>,
+    /// The domain associated with the bang command (e.g., "www.example.com").
+    #[serde(rename = "d")]
+    pub domain: String,
+    /// The relevance score of the bang command.
+    #[serde(rename = "r")]
+    pub relevance: i64,
+    /// The short name or abbreviation of the bang command.
+    #[serde(rename = "s")]
+    pub short_name: String,
+    /// The subcategory of the bang command, if applicable.
+    #[serde(rename = "sc")]
+    pub subcategory: Option<String>,
+    /// The trigger text for the bang command (e.g., "g" for Google).
+    #[serde(rename = "t")]
+    pub trigger: String,
+    /// The URL template where the search term is inserted.
+    #[serde(rename = "u")]
+    pub url_template: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -43,7 +57,8 @@ pub enum Category {
 
 #[derive(Debug, Deserialize)]
 struct SearchParams {
-    q: Option<String>,
+    #[serde(rename = "q")]
+    query: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -75,7 +90,7 @@ async fn update_bangs(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut cache = BANG_CACHE.write().unwrap();
     cache.clear();
     for bang in bang_entries {
-        cache.insert(bang.t.clone(), bang.u.clone());
+        cache.insert(bang.trigger.clone(), bang.url_template.clone());
     }
     *LAST_UPDATE.write().unwrap() = Instant::now();
     info!("Bang commands updated successfully.");
@@ -94,7 +109,7 @@ async fn periodic_update(url: String) {
 
 /// Handler function that extracts the `q` parameter and redirects accordingly
 async fn handler(Query(params): Query<SearchParams>) -> Redirect {
-    if let Some(query) = params.q {
+    if let Some(query) = params.query {
         if let Some(captures) = BANG_REGEX.captures(&query) {
             if let Some(bang) = captures.get(1) {
                 let bang = bang.as_str();
