@@ -1,3 +1,4 @@
+use axum::extract::State;
 use axum::response::Html;
 use axum::{Router, extract::Query, response::Redirect, routing::get};
 use clap::Parser;
@@ -14,7 +15,7 @@ use std::{
 };
 use tokio::net::TcpListener;
 use tokio::time::interval;
-use tracing::{error, info};
+use tracing::{Level, debug, error, info};
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Bang {
@@ -61,7 +62,7 @@ struct SearchParams {
     query: Option<String>,
 }
 
-/// Main CLI configuration. Fields are optional so that values from a file can be merged in.
+/// Main CLI configuration.
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Config {
@@ -76,6 +77,10 @@ struct Config {
     /// URL to fetch bang commands from
     #[arg(short, long)]
     bangs: Option<String>,
+
+    /// Default search engine URL template (use '{}' as placeholder for the query)
+    #[arg(short, long)]
+    default_search: Option<String>,
 }
 
 /// Configuration read from the file.
@@ -84,13 +89,16 @@ struct FileConfig {
     port: Option<u16>,
     ip: Option<IpAddr>,
     bangs: Option<String>,
+    default_search: Option<String>,
 }
 
 /// Final application configuration.
+#[derive(Clone)]
 struct AppConfig {
     port: u16,
     ip: IpAddr,
     bangs: String,
+    default_search: String,
 }
 
 impl Config {
@@ -101,6 +109,7 @@ impl Config {
             port: None,
             ip: None,
             bangs: None,
+            default_search: None,
         });
         AppConfig {
             port: self.port.or(file.port).unwrap_or(3000),
@@ -112,6 +121,10 @@ impl Config {
                 .bangs
                 .or(file.bangs)
                 .unwrap_or_else(|| "https://duckduckgo.com/bang.js".to_string()),
+            default_search: self
+                .default_search
+                .or(file.default_search)
+                .unwrap_or_else(|| "https://www.startpage.com/do/dsearch?query={}".to_string()),
         }
     }
 }
@@ -123,9 +136,7 @@ static BANG_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(!\S+)").unwrap()
 
 async fn update_bangs(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     let response = reqwest::get(url).await?.text().await?;
-
     let bang_entries: Vec<Bang> = serde_json::from_str(&response)?;
-
     let mut cache = BANG_CACHE.write().unwrap();
     cache.clear();
     for bang in bang_entries {
@@ -147,7 +158,11 @@ async fn periodic_update(url: String) {
 }
 
 /// Handler function that extracts the `q` parameter and redirects accordingly
-async fn handler(Query(params): Query<SearchParams>) -> Redirect {
+async fn handler(
+    Query(params): Query<SearchParams>,
+    State(app_config): State<AppConfig>,
+) -> Redirect {
+    let start = Instant::now();
     if let Some(query) = params.query {
         if let Some(captures) = BANG_REGEX.captures(&query) {
             if let Some(bang) = captures.get(1) {
@@ -160,15 +175,24 @@ async fn handler(Query(params): Query<SearchParams>) -> Redirect {
                         .replace("{{{s}}}", &urlencoding::encode(search_term.trim()))
                         .replace("%2F", "/");
                     info!("Redirecting '{}' to '{}'.", query, redirect_url);
+                    debug!(
+                        "Request completed in {:?}",
+                        Instant::now().duration_since(start)
+                    );
+
                     return Redirect::to(&redirect_url);
                 }
             }
         }
-        let default_search_url = format!(
-            "https://www.startpage.com/do/dsearch?query={}",
-            urlencoding::encode(&query)
-        );
+        let default_search_url = app_config
+            .default_search
+            .replace("{}", &urlencoding::encode(&query));
         info!("Redirecting '{}' to '{}'.", query, default_search_url);
+        debug!(
+            "Request completed in {:?}",
+            Instant::now().duration_since(start)
+        );
+
         Redirect::to(&default_search_url)
     } else {
         Redirect::to("/bangs")
@@ -192,7 +216,9 @@ async fn list_bangs() -> Html<String> {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_max_level(Level::DEBUG)
+        .init();
     let cli_config = Config::parse();
 
     let home_dir = env::var("HOME").unwrap_or_else(|_| ".".to_string());
@@ -229,14 +255,14 @@ async fn main() {
         None
     };
 
-    // Merge CLI config with file config.
     let app_config = cli_config.merge(file_config);
 
     tokio::spawn(periodic_update(app_config.bangs.clone()));
 
     let app = Router::new()
         .route("/", get(handler))
-        .route("/bangs", get(list_bangs));
+        .route("/bangs", get(list_bangs))
+        .with_state(app_config.clone());
     let addr = SocketAddr::new(app_config.ip, app_config.port);
     let listener = match TcpListener::bind(addr).await {
         Ok(listener) => listener,
