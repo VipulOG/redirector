@@ -4,10 +4,11 @@ use clap::Parser;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::net::IpAddr;
 use std::{
     collections::HashMap,
-    net::SocketAddr,
+    env,
+    net::{IpAddr, SocketAddr},
+    path::Path,
     sync::RwLock,
     time::{Duration, Instant},
 };
@@ -60,20 +61,59 @@ struct SearchParams {
     query: Option<String>,
 }
 
+/// Main CLI configuration. Fields are optional so that values from a file can be merged in.
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Config {
     /// Port to listen on
-    #[arg(short, long, default_value_t = 3000)]
-    port: u16,
+    #[arg(short, long)]
+    port: Option<u16>,
 
     /// IP to serve the application on
-    #[arg(short, long, default_value = "0.0.0.0")]
-    ip: IpAddr,
+    #[arg(short, long)]
+    ip: Option<IpAddr>,
 
     /// URL to fetch bang commands from
-    #[arg(short, long, default_value = "https://duckduckgo.com/bang.js")]
+    #[arg(short, long)]
+    bangs: Option<String>,
+}
+
+/// Configuration read from the file.
+#[derive(Deserialize, Debug)]
+struct FileConfig {
+    port: Option<u16>,
+    ip: Option<IpAddr>,
+    bangs: Option<String>,
+}
+
+/// Final application configuration.
+struct AppConfig {
+    port: u16,
+    ip: IpAddr,
     bangs: String,
+}
+
+impl Config {
+    /// Merge CLI configuration with an optional file configuration.
+    /// CLI options take precedence over file values.
+    fn merge(self, file: Option<FileConfig>) -> AppConfig {
+        let file = file.unwrap_or(FileConfig {
+            port: None,
+            ip: None,
+            bangs: None,
+        });
+        AppConfig {
+            port: self.port.or(file.port).unwrap_or(3000),
+            ip: self
+                .ip
+                .or(file.ip)
+                .unwrap_or_else(|| "0.0.0.0".parse().unwrap()),
+            bangs: self
+                .bangs
+                .or(file.bangs)
+                .unwrap_or_else(|| "https://duckduckgo.com/bang.js".to_string()),
+        }
+    }
 }
 
 static BANG_CACHE: Lazy<RwLock<HashMap<String, String>>> =
@@ -125,7 +165,6 @@ async fn handler(Query(params): Query<SearchParams>) -> Redirect {
             }
         }
         let default_search_url = format!(
-            //"https://google.com/search?q={}",
             "https://www.startpage.com/do/dsearch?query={}",
             urlencoding::encode(&query)
         );
@@ -153,27 +192,59 @@ async fn list_bangs() -> Html<String> {
 
 #[tokio::main]
 async fn main() {
-    let config = Config::parse();
-
     tracing_subscriber::fmt::init();
+    let cli_config = Config::parse();
 
-    if let Err(e) = update_bangs(&config.bangs).await {
-        error!("Initial bang update failed: {}", e);
-    }
+    let home_dir = env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let config_path = Path::new(&home_dir)
+        .join(".config")
+        .join("redirector")
+        .join("config.toml");
 
-    tokio::spawn(periodic_update(config.bangs.clone()));
+    // Attempt to load the file configuration if it exists.
+    let file_config = if config_path.exists() {
+        match std::fs::read_to_string(&config_path) {
+            Ok(contents) => match toml::from_str::<FileConfig>(&contents) {
+                Ok(conf) => Some(conf),
+                Err(e) => {
+                    error!(
+                        "Failed to parse configuration file at {}: {}",
+                        config_path.display(),
+                        e
+                    );
+                    None
+                }
+            },
+            Err(e) => {
+                error!(
+                    "Failed to read configuration file at {}: {}",
+                    config_path.display(),
+                    e
+                );
+                None
+            }
+        }
+    } else {
+        info!("Configuration file not found at {}.", config_path.display());
+        None
+    };
+
+    // Merge CLI config with file config.
+    let app_config = cli_config.merge(file_config);
+
+    tokio::spawn(periodic_update(app_config.bangs.clone()));
 
     let app = Router::new()
         .route("/", get(handler))
         .route("/bangs", get(list_bangs));
-    let addr = SocketAddr::new(config.ip, config.port);
+    let addr = SocketAddr::new(app_config.ip, app_config.port);
     let listener = match TcpListener::bind(addr).await {
         Ok(listener) => listener,
         Err(e) => {
-            error!("Failed to bind to address: {}", e);
+            error!("Failed to bind to address '{}': {}", addr, e);
             return;
         }
     };
-    info!("Server running on {}", addr);
+    info!("Server running on '{}'", addr);
     axum::serve(listener, app).await.unwrap();
 }
