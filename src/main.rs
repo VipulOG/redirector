@@ -1,3 +1,4 @@
+use axum::response::Html;
 use axum::{Router, extract::Query, response::Redirect, routing::get};
 use clap::Parser;
 use once_cell::sync::Lazy;
@@ -13,8 +14,6 @@ use std::{
 use tokio::net::TcpListener;
 use tokio::time::interval;
 use tracing::{error, info};
-
-pub type Bangs = Vec<Bang>;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Bang {
@@ -68,7 +67,7 @@ struct Config {
     #[arg(short, long, default_value_t = 3000)]
     port: u16,
 
-    /// URL to serve the application on
+    /// IP to serve the application on
     #[arg(short, long, default_value = "0.0.0.0")]
     ip: IpAddr,
 
@@ -80,12 +79,12 @@ struct Config {
 static BANG_CACHE: Lazy<RwLock<HashMap<String, String>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 static LAST_UPDATE: Lazy<RwLock<Instant>> = Lazy::new(|| RwLock::new(Instant::now()));
-static BANG_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r".*(!\w+\s?|\s?!\w+).*").unwrap());
+static BANG_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(!\S+)").unwrap());
 
 async fn update_bangs(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     let response = reqwest::get(url).await?.text().await?;
 
-    let bang_entries: Bangs = serde_json::from_str(&response)?;
+    let bang_entries: Vec<Bang> = serde_json::from_str(&response)?;
 
     let mut cache = BANG_CACHE.write().unwrap();
     cache.clear();
@@ -113,25 +112,43 @@ async fn handler(Query(params): Query<SearchParams>) -> Redirect {
         if let Some(captures) = BANG_REGEX.captures(&query) {
             if let Some(bang) = captures.get(1) {
                 let bang = bang.as_str();
-                let search_term = query.replace(bang, "");
+                let search_term = query.replacen(bang, "", 1);
                 let cache = BANG_CACHE.read().unwrap();
-                if let Some(url_template) = cache.get(bang.trim().strip_prefix("!").unwrap_or("")) {
-                    let redirect_url =
-                        url_template.replace("{{{s}}}", &urlencoding::encode(search_term.as_str()));
+                if let Some(url_template) = cache.get(bang.trim().strip_prefix("!").unwrap_or(bang))
+                {
+                    let redirect_url = url_template
+                        .replace("{{{s}}}", &urlencoding::encode(search_term.trim()))
+                        .replace("%2F", "/");
                     info!("Redirecting '{}' to '{}'.", query, redirect_url);
                     return Redirect::to(&redirect_url);
                 }
             }
         }
-        info!("Redirecting '{}' to '{}'.", query, "standard search");
         let default_search_url = format!(
-            "https://google.com/search?q={}",
+            //"https://google.com/search?q={}",
+            "https://www.startpage.com/do/dsearch?query={}",
             urlencoding::encode(&query)
         );
+        info!("Redirecting '{}' to '{}'.", query, default_search_url);
         Redirect::to(&default_search_url)
     } else {
-        Redirect::to("https://google.com/")
+        Redirect::to("/bangs")
     }
+}
+
+async fn list_bangs() -> Html<String> {
+    let cache = BANG_CACHE.read().unwrap();
+    let mut html = String::from(
+        "<html><head><title>Bang Commands</title></head><body><h1>Bang Commands</h1><ul>",
+    );
+    for (trigger, url_template) in cache.iter() {
+        html.push_str(&format!(
+            "<li><strong>{}</strong>: {}</li>",
+            trigger, url_template
+        ));
+    }
+    html.push_str("</ul></body></html>");
+    Html(html)
 }
 
 #[tokio::main]
@@ -146,10 +163,12 @@ async fn main() {
 
     tokio::spawn(periodic_update(config.bangs.clone()));
 
-    let app = Router::new().route("/", get(handler));
-    let addr = SocketAddr::from((config.ip, config.port));
+    let app = Router::new()
+        .route("/", get(handler))
+        .route("/bangs", get(list_bangs));
+    let addr = SocketAddr::new(config.ip, config.port);
     let listener = match TcpListener::bind(addr).await {
-        Result::Ok(listener) => listener,
+        Ok(listener) => listener,
         Err(e) => {
             error!("Failed to bind to address: {}", e);
             return;
