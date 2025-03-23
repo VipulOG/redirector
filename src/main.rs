@@ -1,14 +1,19 @@
+mod bang;
+mod config;
+
+use crate::bang::Bang;
+use crate::config::{AppConfig, Config, FileConfig};
 use axum::extract::State;
 use axum::response::Html;
 use axum::{Router, extract::Query, response::Redirect, routing::get};
 use clap::Parser;
 use once_cell::sync::Lazy;
 use regex::Regex;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::{
     collections::HashMap,
     env,
-    net::{IpAddr, SocketAddr},
+    net::SocketAddr,
     path::Path,
     sync::RwLock,
     time::{Duration, Instant},
@@ -17,116 +22,10 @@ use tokio::net::TcpListener;
 use tokio::time::interval;
 use tracing::{Level, debug, error, info};
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct Bang {
-    /// The category of the bang command (e.g., "Tech", "Entertainment").
-    #[serde(rename = "c")]
-    pub category: Option<Category>,
-    /// The domain associated with the bang command (e.g., "www.example.com").
-    #[serde(rename = "d")]
-    pub domain: String,
-    /// The relevance score of the bang command.
-    #[serde(rename = "r")]
-    pub relevance: i64,
-    /// The short name or abbreviation of the bang command.
-    #[serde(rename = "s")]
-    pub short_name: String,
-    /// The subcategory of the bang command, if applicable.
-    #[serde(rename = "sc")]
-    pub subcategory: Option<String>,
-    /// The trigger text for the bang command (e.g., "g" for Google).
-    #[serde(rename = "t")]
-    pub trigger: String,
-    /// The URL template where the search term is inserted.
-    #[serde(rename = "u")]
-    pub url_template: String,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "PascalCase")]
-pub enum Category {
-    Entertainment,
-    Multimedia,
-    News,
-    #[serde(rename = "Online Services")]
-    OnlineServices,
-    Research,
-    Shopping,
-    Tech,
-    Translation,
-}
-
 #[derive(Debug, Deserialize)]
 struct SearchParams {
     #[serde(rename = "q")]
     query: Option<String>,
-}
-
-/// Main CLI configuration.
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-struct Config {
-    /// Port to listen on
-    #[arg(short, long)]
-    port: Option<u16>,
-
-    /// IP to serve the application on
-    #[arg(short, long)]
-    ip: Option<IpAddr>,
-
-    /// URL to fetch bang commands from
-    #[arg(short, long)]
-    bangs: Option<String>,
-
-    /// Default search engine URL template (use '{}' as placeholder for the query)
-    #[arg(short, long)]
-    default_search: Option<String>,
-}
-
-/// Configuration read from the file.
-#[derive(Deserialize, Debug)]
-struct FileConfig {
-    port: Option<u16>,
-    ip: Option<IpAddr>,
-    bangs: Option<String>,
-    default_search: Option<String>,
-}
-
-/// Final application configuration.
-#[derive(Clone)]
-struct AppConfig {
-    port: u16,
-    ip: IpAddr,
-    bangs: String,
-    default_search: String,
-}
-
-impl Config {
-    /// Merge CLI configuration with an optional file configuration.
-    /// CLI options take precedence over file values.
-    fn merge(self, file: Option<FileConfig>) -> AppConfig {
-        let file = file.unwrap_or(FileConfig {
-            port: None,
-            ip: None,
-            bangs: None,
-            default_search: None,
-        });
-        AppConfig {
-            port: self.port.or(file.port).unwrap_or(3000),
-            ip: self
-                .ip
-                .or(file.ip)
-                .unwrap_or_else(|| "0.0.0.0".parse().unwrap()),
-            bangs: self
-                .bangs
-                .or(file.bangs)
-                .unwrap_or_else(|| "https://duckduckgo.com/bang.js".to_string()),
-            default_search: self
-                .default_search
-                .or(file.default_search)
-                .unwrap_or_else(|| "https://www.startpage.com/do/dsearch?query={}".to_string()),
-        }
-    }
 }
 
 static BANG_CACHE: Lazy<RwLock<HashMap<String, String>>> =
@@ -134,14 +33,19 @@ static BANG_CACHE: Lazy<RwLock<HashMap<String, String>>> =
 static LAST_UPDATE: Lazy<RwLock<Instant>> = Lazy::new(|| RwLock::new(Instant::now()));
 static BANG_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(!\S+)").unwrap());
 
-async fn update_bangs(url: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let response = reqwest::get(url).await?.text().await?;
+async fn update_bangs(app_config: &AppConfig) -> Result<(), Box<dyn std::error::Error>> {
+    let response = reqwest::get(&app_config.bangs_url).await?.text().await?;
     let bang_entries: Vec<Bang> = serde_json::from_str(&response)?;
     match BANG_CACHE.write() {
         Ok(mut cache) => {
             cache.clear();
             for bang in bang_entries {
                 cache.insert(bang.trigger.clone(), bang.url_template.clone());
+            }
+            if let Some(bangs) = &app_config.bangs {
+                for bang in bangs {
+                    cache.insert(bang.trigger.clone(), bang.url_template.clone());
+                }
             }
             *LAST_UPDATE.write().unwrap() = Instant::now();
             info!("Bang commands updated successfully.");
@@ -154,11 +58,11 @@ async fn update_bangs(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-async fn periodic_update(url: String) {
+async fn periodic_update(app_config: AppConfig) {
     let mut interval = interval(Duration::from_secs(24 * 60 * 60)); // 24 hours
     loop {
         interval.tick().await;
-        if let Err(e) = update_bangs(&url).await {
+        if let Err(e) = update_bangs(&app_config).await {
             error!("Failed to update bang commands: {}", e);
         }
     }
@@ -172,8 +76,8 @@ async fn handler(
     let start = Instant::now();
     if let Some(query) = params.query {
         if let Some(captures) = BANG_REGEX.captures(&query) {
-            if let Some(bang) = captures.get(1) {
-                let bang = bang.as_str();
+            if let Some(matched) = captures.get(1) {
+                let bang = matched.as_str();
                 let search_term = query.replacen(bang, "", 1);
                 if let Ok(cache) = BANG_CACHE.read() {
                     if let Some(url_template) =
@@ -210,11 +114,24 @@ async fn handler(
     }
 }
 
-async fn list_bangs() -> Html<String> {
+async fn list_bangs(State(app_config): State<AppConfig>) -> Html<String> {
     if let Ok(cache) = BANG_CACHE.read() {
         let mut html = String::from(
-            "<html><head><title>Bang Commands</title></head><body><h1>Bang Commands</h1><ul>",
+            "<html><head><title>Bang Commands</title></head><body><h1>Bang Commands</h1>",
         );
+
+        if let Some(bangs) = &app_config.bangs {
+            html.push_str("<h2>Configured Bangs</h2><ul>");
+            for bang in bangs {
+                html.push_str(&format!(
+                    "<li><strong>{}</strong>: {}</li>",
+                    bang.trigger, bang.url_template
+                ));
+            }
+            html.push_str("</ul>");
+        }
+
+        html.push_str("<h2>Active Bangs</h2><ul>");
         for (trigger, url_template) in cache.iter() {
             html.push_str(&format!(
                 "<li><strong>{}</strong>: {}</li>",
@@ -271,7 +188,7 @@ async fn main() {
 
     let app_config = cli_config.merge(file_config);
 
-    tokio::spawn(periodic_update(app_config.bangs.clone()));
+    tokio::spawn(periodic_update(app_config.clone()));
 
     let app = Router::new()
         .route("/", get(handler))
