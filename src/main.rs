@@ -137,14 +137,21 @@ static BANG_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(!\S+)").unwrap()
 async fn update_bangs(url: &str) -> Result<(), Box<dyn std::error::Error>> {
     let response = reqwest::get(url).await?.text().await?;
     let bang_entries: Vec<Bang> = serde_json::from_str(&response)?;
-    let mut cache = BANG_CACHE.write().unwrap();
-    cache.clear();
-    for bang in bang_entries {
-        cache.insert(bang.trigger.clone(), bang.url_template.clone());
+    match BANG_CACHE.write() {
+        Ok(mut cache) => {
+            cache.clear();
+            for bang in bang_entries {
+                cache.insert(bang.trigger.clone(), bang.url_template.clone());
+            }
+            *LAST_UPDATE.write().unwrap() = Instant::now();
+            info!("Bang commands updated successfully.");
+            Ok(())
+        }
+        Err(err) => {
+            error!("Failed to acquire bang cache write lock.");
+            Err(format!("Failed to acquire bang cache write lock: {}", err).into())
+        }
     }
-    *LAST_UPDATE.write().unwrap() = Instant::now();
-    info!("Bang commands updated successfully.");
-    Ok(())
 }
 
 async fn periodic_update(url: String) {
@@ -168,19 +175,23 @@ async fn handler(
             if let Some(bang) = captures.get(1) {
                 let bang = bang.as_str();
                 let search_term = query.replacen(bang, "", 1);
-                let cache = BANG_CACHE.read().unwrap();
-                if let Some(url_template) = cache.get(bang.trim().strip_prefix("!").unwrap_or(bang))
-                {
-                    let redirect_url = url_template
-                        .replace("{{{s}}}", &urlencoding::encode(search_term.trim()))
-                        .replace("%2F", "/");
-                    info!("Redirecting '{}' to '{}'.", query, redirect_url);
-                    debug!(
-                        "Request completed in {:?}",
-                        Instant::now().duration_since(start)
-                    );
+                if let Ok(cache) = BANG_CACHE.read() {
+                    if let Some(url_template) =
+                        cache.get(bang.trim().strip_prefix("!").unwrap_or(bang))
+                    {
+                        let redirect_url = url_template
+                            .replace("{{{s}}}", &urlencoding::encode(search_term.trim()))
+                            .replace("%2F", "/");
+                        info!("Redirecting '{}' to '{}'.", query, redirect_url);
+                        debug!(
+                            "Request completed in {:?}",
+                            Instant::now().duration_since(start)
+                        );
 
-                    return Redirect::to(&redirect_url);
+                        return Redirect::to(&redirect_url);
+                    }
+                } else {
+                    error!("Failed to acquire bang cache read lock.");
                 }
             }
         }
@@ -200,18 +211,21 @@ async fn handler(
 }
 
 async fn list_bangs() -> Html<String> {
-    let cache = BANG_CACHE.read().unwrap();
-    let mut html = String::from(
-        "<html><head><title>Bang Commands</title></head><body><h1>Bang Commands</h1><ul>",
-    );
-    for (trigger, url_template) in cache.iter() {
-        html.push_str(&format!(
-            "<li><strong>{}</strong>: {}</li>",
-            trigger, url_template
-        ));
+    if let Ok(cache) = BANG_CACHE.read() {
+        let mut html = String::from(
+            "<html><head><title>Bang Commands</title></head><body><h1>Bang Commands</h1><ul>",
+        );
+        for (trigger, url_template) in cache.iter() {
+            html.push_str(&format!(
+                "<li><strong>{}</strong>: {}</li>",
+                trigger, url_template
+            ));
+        }
+        html.push_str("</ul></body></html>");
+        Html(html)
+    } else {
+        Html("<html><head><title>Error</title></head><body><h1>Error</h1><p>Failed to acquire bang cache read lock.</p></body></html>".to_string())
     }
-    html.push_str("</ul></body></html>");
-    Html(html)
 }
 
 #[tokio::main]
