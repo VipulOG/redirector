@@ -9,7 +9,7 @@ use anyhow::{Result, anyhow};
 use axum::extract::State;
 use axum::response::Html;
 use axum::{Router, extract::Query, response::Redirect, routing::get};
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::Deserialize;
@@ -22,9 +22,11 @@ use std::{
     sync::RwLock,
     time::{Duration, Instant},
 };
+use clap_complete::generate;
 use tokio::net::TcpListener;
 use tokio::time::interval;
 use tracing::{Level, debug, error, info};
+use crate::cli::SubCommand::Completions;
 
 #[derive(Debug, Deserialize)]
 struct SearchParams {
@@ -241,6 +243,14 @@ async fn main() {
                 error!("Failed to update bang commands: {}", e);
             }
             println!("{}", resolve(&app_config, &query));
+        }
+        Some(Completions { shell }) => {
+            generate(
+                shell,
+                &mut Cli::command(),
+                env!("CARGO_PKG_NAME"),
+                &mut std::io::stdout(),
+            );
         }
     }
 }

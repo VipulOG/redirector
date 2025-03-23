@@ -1,3 +1,4 @@
+use clap_complete::Shell;
 use clap::{Parser, Subcommand};
 use std::net::IpAddr;
 
@@ -34,5 +35,10 @@ pub enum SubCommand {
         /// The search query to resolve
         #[arg(required = true)]
         query: String,
+    },
+    #[command(about = "Generate shell completions", display_order = 3)]
+    Completions {
+        #[clap(value_enum)]
+        shell: Shell,
     },
 }
