@@ -1,5 +1,5 @@
-use clap_complete::Shell;
 use clap::{Parser, Subcommand};
+use clap_complete::Shell;
 use std::net::IpAddr;
 
 /// Main CLI configuration.
@@ -7,15 +7,15 @@ use std::net::IpAddr;
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
     #[clap(subcommand)]
-    pub(crate) command: Option<SubCommand>,
+    pub command: Option<SubCommand>,
 
     /// URL to fetch bang commands from
     #[arg(short, long)]
-    pub(crate) bangs_url: Option<String>,
+    pub bangs_url: Option<String>,
 
     /// Default search engine URL template (use '{}' as placeholder for the query)
     #[arg(short, long)]
-    pub(crate) default_search: Option<String>,
+    pub default_search: Option<String>,
 }
 
 #[derive(Subcommand, Debug, Clone)]
