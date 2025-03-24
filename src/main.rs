@@ -113,7 +113,7 @@ async fn handler(
     )
 }
 
-#[inline]
+#[inline(always)]
 fn resolve(app_config: &AppConfig, query: &str) -> String {
     if let Some(captures) = BANG_REGEX.captures(query) {
         if let Some(matched) = captures.get(1) {
@@ -140,24 +140,24 @@ fn resolve(app_config: &AppConfig, query: &str) -> String {
 async fn list_bangs(State(app_config): State<AppConfig>) -> Html<String> {
     if let Ok(cache) = BANG_CACHE.read() {
         let mut html = String::from(
-            "<html><head><title>Bang Commands</title></head><body><h1>Bang Commands</h1>",
+            "<style>:root { background: #181818; color: #ffffff; font-family: monospace; } table { border-collapse: collapse; width: 100vw; } table th { text-align: left; padding: 1rem 0; font-size: 1.25rem; width: 100vw; } table tr { border-bottom: #ffffff10 solid 2px; } table tr:nth-child(2n) { background: #161616; } table tr:nth-child(2n+1) { background: #181818; }</style><html><head><title>Bang Commands</title></head><body><h1>Bang Commands</h1>",
         );
 
         if let Some(bangs) = &app_config.bangs {
-            html.push_str("<h2>Configured Bangs</h2><ul>");
+            html.push_str("<h2>Configured Bangs</h2><table><th>Abbr.</th><th>Trigger</th><th>URL</th>");
             for bang in bangs {
                 html.push_str(&format!(
-                    "<li><strong>{}</strong>: {}</li>",
-                    bang.trigger, bang.url_template
+                    "<tr><td><strong>{:?}</strong></td><td>{}</td><td>{}</td></tr>",
+                    bang.short_name, bang.trigger, bang.url_template
                 ));
             }
-            html.push_str("</ul>");
+            html.push_str("</table>");
         }
 
-        html.push_str("<h2>Active Bangs</h2><ul>");
+        html.push_str("<h2>Active Bangs</h2><table><th>Trigger</th><th>URL</th>");
         for (trigger, url_template) in cache.iter() {
             html.push_str(&format!(
-                "<li><strong>{trigger}</strong>: {url_template}</li>",
+                "<tr><td><strong>{trigger}</strong></td><td>{url_template}</td></tr>"
             ));
         }
         html.push_str("</ul></body></html>");
