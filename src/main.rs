@@ -4,12 +4,14 @@ mod config;
 
 use crate::bang::Bang;
 use crate::cli::SubCommand;
+use crate::cli::SubCommand::Completions;
 use crate::config::{AppConfig, Cli, FileConfig};
 use anyhow::{Result, anyhow};
 use axum::extract::State;
 use axum::response::Html;
 use axum::{Router, extract::Query, response::Redirect, routing::get};
 use clap::{CommandFactory, Parser};
+use clap_complete::generate;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::Deserialize;
@@ -22,11 +24,9 @@ use std::{
     sync::RwLock,
     time::{Duration, Instant},
 };
-use clap_complete::generate;
 use tokio::net::TcpListener;
 use tokio::time::interval;
 use tracing::{Level, debug, error, info};
-use crate::cli::SubCommand::Completions;
 
 #[derive(Debug, Deserialize)]
 struct SearchParams {
@@ -37,7 +37,7 @@ struct SearchParams {
 static BANG_CACHE: Lazy<RwLock<HashMap<String, String>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 static LAST_UPDATE: Lazy<RwLock<Instant>> = Lazy::new(|| RwLock::new(Instant::now()));
-static BANG_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(!\S+)").unwrap());
+static BANG_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)(!\S+){1}").unwrap());
 
 async fn update_bangs(app_config: &AppConfig) -> Result<()> {
     let cache_path = std::env::temp_dir().join("bang_cache.json");
