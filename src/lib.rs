@@ -4,16 +4,13 @@ pub mod config;
 
 use crate::bang::Bang;
 use crate::config::AppConfig;
-use anyhow::anyhow;
-use memchr::memmem::find;
-use regex::Regex;
+use parking_lot::RwLock;
+use std::borrow::Cow;
 use std::collections::HashMap;
-use std::sync::{LazyLock};
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
-use tracing::{debug, error, info};
-use parking_lot::{RwLock, RwLockReadGuard};
+use tracing::{debug, info};
 
-static BANG_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(!\S+)").unwrap());
 pub static BANG_CACHE: LazyLock<RwLock<HashMap<String, String>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
 static LAST_UPDATE: LazyLock<RwLock<Instant>> = LazyLock::new(|| RwLock::new(Instant::now()));
@@ -21,6 +18,7 @@ static LAST_UPDATE: LazyLock<RwLock<Instant>> = LazyLock::new(|| RwLock::new(Ins
 /// Get the bang command from the query.
 /// this is the first '!' that is not preceded by a non-space character and followed by a space.
 #[inline]
+#[must_use]
 pub fn get_bang(query: &str) -> Option<&str> {
     let bytes = query.as_bytes();
     let len = bytes.len();
@@ -45,7 +43,7 @@ pub fn get_bang(query: &str) -> Option<&str> {
     // Simple linear scan for bangs following spaces
     let mut i = 1;
     while i < len {
-        if bytes[i] == b'!' && bytes[i-1] == b' ' {
+        if bytes[i] == b'!' && bytes[i - 1] == b' ' {
             let start = i;
             i += 1;
 
@@ -60,9 +58,8 @@ pub fn get_bang(query: &str) -> Option<&str> {
             }
 
             return Some(&query[start..i]);
-        } else {
-            i += 1;
         }
+        i += 1;
     }
 
     None
@@ -70,34 +67,64 @@ pub fn get_bang(query: &str) -> Option<&str> {
 
 #[allow(clippy::inline_always)]
 #[inline(always)]
+#[must_use]
 pub fn resolve(app_config: &AppConfig, query: &str) -> String {
-    // let mut start = Instant::now();
-    if let Some(bang) = get_bang(query) {
-        // info!("bang search took {:?}", start.elapsed());
-        // start = Instant::now();
-        let search_term = query.replacen(bang, "", 1);
-        // info!("search term took {:?}", start.elapsed());
-        // start = Instant::now();
-        let cache = BANG_CACHE.read();
-        // info!("cache read took {:?}", start.elapsed());
-        // start = Instant::now();
-        let key_lower = bang[1..].to_ascii_lowercase().to_owned();
-        if let Some(mut url_template) = cache.get(&key_lower).cloned() {
-            // info!("cache get took {:?}", start.elapsed());
-            // start = Instant::now();
-            return if find(url_template.as_bytes(), b"{{{s}}}").is_none() {
-                // info!("find took {:?}", start.elapsed());
-                url_template.push_str(&urlencoding::encode(search_term.trim()));
-                url_template.replace("%2F", "/")
-            } else {
-                // info!("find took {:?}", start.elapsed());
-                url_template
-                    .replace("{{{s}}}", &urlencoding::encode(search_term.trim()))
-                    .replace("%2F", "/")
-            };
+    if query.is_empty() {
+        return app_config.default_search.replace("{}", "");
+    }
+
+    let bytes = query.as_bytes();
+
+    // Fastest path for most common case - single-word plain queries
+    if bytes[0] != b'!' {
+        // Quick check for spaces without using contains()
+        let mut has_space = false;
+        for &b in bytes {
+            if b == b' ' {
+                has_space = true;
+                break;
+            }
+        }
+
+        if !has_space {
+            return app_config
+                .default_search
+                .replace("{}", &urlencoding::encode(query));
         }
     }
-    // info!("default search took {:?}", start.elapsed());
+
+    if let Some(bang) = get_bang(query) {
+        let cache = BANG_CACHE.read();
+        let key_lower = bang[1..].to_ascii_lowercase();
+
+        if let Some(url_template) = cache.get(&key_lower) {
+            let replaced = query.replacen(bang, "", 1);
+            let search_term = replaced.trim();
+            let mut encoded_term = urlencoding::encode(search_term);
+
+            // Fix slashes once in the encoded term
+            if encoded_term.contains("%2F") {
+                encoded_term = Cow::from(encoded_term.replace("%2F", "/"));
+            }
+
+            // Template handling
+            if url_template.contains("{{{s}}}") {
+                let result = url_template.replace("{{{s}}}", &encoded_term);
+                if encoded_term.contains("%2F") {
+                    return result.replace("%2F", "/");
+                }
+                return result;
+            }
+
+            // Simple append case
+            let mut result = String::with_capacity(url_template.len() + encoded_term.len());
+            result.push_str(url_template);
+            result.push_str(&encoded_term);
+            return result;
+        }
+    }
+
+    // Default fallback
     app_config
         .default_search
         .replace("{}", &urlencoding::encode(query))
@@ -116,7 +143,8 @@ pub fn update_bangs(app_config: &AppConfig) -> anyhow::Result<()> {
             if modified.elapsed()? < cache_age_limit {
                 if let Ok(contents) = std::fs::read_to_string(&cache_path) {
                     let bang_entries: Vec<Bang> = serde_json::from_str(&contents)?;
-                    update_cache(bang_entries, app_config)?;
+                    info!("Bang cache is up to date.");
+                    update_cache(bang_entries, app_config);
                     return Ok(());
                 }
             }
@@ -127,16 +155,16 @@ pub fn update_bangs(app_config: &AppConfig) -> anyhow::Result<()> {
     let bang_entries: Vec<Bang> = serde_json::from_str(&response)?;
 
     std::fs::write(cache_path, &response)?;
-    update_cache(bang_entries, app_config)
+    update_cache(bang_entries, app_config);
+    Ok(())
 }
 
 /// Update the bang cache with the provided bang commands.
 ///
 /// # Errors
 /// If it fails to get the write lock on the bang cache or the last update time.
-fn update_cache(bang_entries: Vec<Bang>, app_config: &AppConfig) -> anyhow::Result<()> {
-    let mut cache = BANG_CACHE
-        .write();
+fn update_cache(bang_entries: Vec<Bang>, app_config: &AppConfig) {
+    let mut cache = BANG_CACHE.write();
     cache.clear();
     for bang in bang_entries {
         cache.insert(bang.trigger.clone(), bang.url_template.clone());
@@ -147,8 +175,99 @@ fn update_cache(bang_entries: Vec<Bang>, app_config: &AppConfig) -> anyhow::Resu
         }
     }
     drop(cache);
-    *LAST_UPDATE
-        .write() = Instant::now();
+    *LAST_UPDATE.write() = Instant::now();
     debug!("Bang commands updated successfully.");
-    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_bang() {
+        // Valid bang queries
+        assert_eq!(get_bang("!gh search term"), Some("!gh"));
+        assert_eq!(get_bang("search !gh term"), Some("!gh"));
+        assert_eq!(get_bang("!gh"), Some("!gh"));
+        assert_eq!(get_bang("!multi-word"), Some("!multi-word"));
+        assert_eq!(get_bang("  !gh search"), Some("!gh"));
+        assert_eq!(get_bang("!g rust programming"), Some("!g"));
+
+        // Invalid bang queries
+        assert_eq!(get_bang("search!gh term"), None); // No space before !
+        assert_eq!(get_bang("search! gh term"), None); // Space after !
+        assert_eq!(get_bang("!"), None); // Single ! is not a bang
+        assert_eq!(get_bang(""), None); // Empty string
+        assert_eq!(get_bang("no bang here"), None); // No bang
+        assert_eq!(get_bang("a!!gh"), None); // No space before !
+    }
+
+    #[test]
+    fn test_resolve_with_bang() {
+        let config = AppConfig::default();
+        update_bangs(&config).unwrap();
+
+        // Test with template that has {{{s}}}
+        let result = resolve(&config, "!g rust programming");
+        assert_eq!(result, "https://www.google.com/search?q=rust%20programming");
+
+        // Test with template that doesn't have {{{s}}}
+        let result = resolve(&config, "!gh rust programming");
+        assert_eq!(
+            result,
+            "https://github.com/search?utf8=%E2%9C%93&q=rust%20programming"
+        );
+
+        // Test with bang at different position
+        let result = resolve(&config, "rust !yt programming");
+        assert_eq!(
+            result,
+            "https://www.youtube.com/results?search_query=rust%20%20programming"
+        );
+    }
+
+    #[test]
+    fn test_resolve_without_bang() {
+        let config = AppConfig::default();
+
+        update_bangs(&config).unwrap();
+
+        // Test with no bang
+        let result = resolve(&config, "rust programming");
+        assert_eq!(
+            result,
+            config.default_search.replace("{}", "rust%20programming")
+        );
+
+        // Test with non-matching bang
+        let result = resolve(&config, "!nonexistent rust programming");
+        assert_eq!(
+            result,
+            config
+                .default_search
+                .replace("{}", "%21nonexistent%20rust%20programming")
+        );
+    }
+
+    #[test]
+    fn test_resolve_edge_cases() {
+        let config = AppConfig::default();
+
+        update_bangs(&config).unwrap();
+
+        // Empty query
+        let result = resolve(&config, "");
+        assert_eq!(result, config.default_search.replace("{}", ""));
+
+        // URL encoding special chars
+        let result = resolve(&config, "!g c++ & rust/wasm");
+        assert_eq!(
+            result,
+            "https://www.google.com/search?q=c%2B%2B%20%26%20rust/wasm"
+        );
+
+        // Only a bang with no search term
+        let result = resolve(&config, "!g");
+        assert_eq!(result, "https://www.google.com/search?q=");
+    }
 }

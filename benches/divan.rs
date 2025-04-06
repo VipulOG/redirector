@@ -1,12 +1,9 @@
-use divan::{Bencher, black_box};
+use divan::Bencher;
 use rand::Rng;
 use rand::prelude::IndexedRandom;
-use rand::seq::SliceRandom;
 use redirector::config::AppConfig;
 use redirector::{get_bang, resolve, update_bangs};
-use std::net::IpAddr;
-use tracing::log::Level::Info;
-use tracing::{Level, info};
+use tracing::Level;
 
 fn main() {
     tracing_subscriber::fmt()
@@ -31,16 +28,18 @@ fn resolve_query_with_bang(bencher: Bencher) {
 #[divan::bench(sample_count = 10_000)]
 fn resolve_random_generated_query(bencher: Bencher) {
     let config = create_config();
-    bencher.with_inputs(|| generate_random_query()).bench_values(|query| {
-        resolve(&config, &query)
-    });
+    bencher
+        .with_inputs(|| generate_random_query())
+        .bench_values(|query| resolve(&config, &query));
 }
 
 #[divan::bench(sample_count = 10_000)]
 fn get_bang_random(bencher: Bencher) {
-    bencher.with_inputs(|| generate_random_query()).bench_values(|query| {
-        get_bang(&*query);
-    });
+    bencher
+        .with_inputs(|| generate_random_query())
+        .bench_values(|query| {
+            let _ = get_bang(&*query);
+        });
 }
 
 fn create_config() -> AppConfig {
@@ -104,4 +103,3 @@ fn generate_random_query() -> String {
         selected_words.join(" ")
     }
 }
-

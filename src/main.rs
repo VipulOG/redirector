@@ -58,7 +58,6 @@ async fn handler(
 }
 
 async fn list_bangs(State(app_config): State<AppConfig>) -> Html<String> {
-    let cache = BANG_CACHE.read();
     let mut html = String::from(
         "<style>:root { background: #181818; color: #ffffff; font-family: monospace; } table { border-collapse: collapse; width: 100vw; } table th { text-align: left; padding: 1rem 0; font-size: 1.25rem; width: 100vw; } table tr { border-bottom: #ffffff10 solid 2px; } table tr:nth-child(2n) { background: #161616; } table tr:nth-child(2n+1) { background: #181818; }</style><html><head><title>Bang Commands</title></head><body><h1>Bang Commands</h1>",
     );
@@ -77,7 +76,7 @@ async fn list_bangs(State(app_config): State<AppConfig>) -> Html<String> {
     }
 
     html.push_str("<h2>Active Bangs</h2><table><th>Trigger</th><th>URL</th>");
-    for (trigger, url_template) in cache.iter() {
+    for (trigger, url_template) in BANG_CACHE.read().iter() {
         write!(
             html,
             "<tr><td><strong>{trigger}</strong></td><td>{url_template}</td></tr>"

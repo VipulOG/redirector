@@ -3,8 +3,7 @@ use rand::Rng;
 use rand::prelude::IndexedRandom;
 use redirector::config::AppConfig;
 use redirector::{get_bang, resolve, update_bangs};
-use std::net::IpAddr;
-use tracing::{Level, info};
+use tracing::Level;
 
 fn generate_random_query() -> String {
     let bang_commands = [
@@ -88,7 +87,9 @@ fn benchmark_get_bang(c: &mut Criterion) {
     c.bench_function("get bang", |b| {
         b.iter_batched(
             generate_random_query,
-            |query| { get_bang(&*query); },
+            |query| {
+                let _ = get_bang(&*query);
+            },
             BatchSize::SmallInput,
         )
     });
