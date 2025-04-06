@@ -8,9 +8,10 @@ use anyhow::anyhow;
 use memchr::memmem::find;
 use regex::Regex;
 use std::collections::HashMap;
-use std::sync::{LazyLock, RwLock};
+use std::sync::{LazyLock};
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info};
+use parking_lot::{RwLock, RwLockReadGuard};
 
 static BANG_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(!\S+)").unwrap());
 pub static BANG_CACHE: LazyLock<RwLock<HashMap<String, String>>> =
@@ -21,19 +22,49 @@ static LAST_UPDATE: LazyLock<RwLock<Instant>> = LazyLock::new(|| RwLock::new(Ins
 /// this is the first '!' that is not preceded by a non-space character and followed by a space.
 #[inline]
 pub fn get_bang(query: &str) -> Option<&str> {
-    let indices = query.match_indices('!');
-    for (i, _) in indices {
-        if query.as_bytes().get(i + 1).is_some()
-            && query.as_bytes()[i + 1] != b' '
-            && ((i > 0 && query.as_bytes()[i - 1] == b' ') || i == 0)
-        {
-            if let Some(bang) = query[i..].split_whitespace().next() {
-                if bang.len() > 1 {
-                    return Some(bang);
-                }
-            }
+    let bytes = query.as_bytes();
+    let len = bytes.len();
+
+    // Fast path for short queries
+    if len < 2 {
+        return None;
+    }
+
+    // Check for bang at start (common case)
+    if bytes[0] == b'!' {
+        let mut end = 1;
+        while end < len && bytes[end] != b' ' {
+            end += 1;
+        }
+        // Valid bang needs at least one character after '!'
+        if end > 1 {
+            return Some(&query[0..end]);
         }
     }
+
+    // Simple linear scan for bangs following spaces
+    let mut i = 1;
+    while i < len {
+        if bytes[i] == b'!' && bytes[i-1] == b' ' {
+            let start = i;
+            i += 1;
+
+            // Skip if no characters after '!'
+            if i == len || bytes[i] == b' ' {
+                continue;
+            }
+
+            // Find end of bang
+            while i < len && bytes[i] != b' ' {
+                i += 1;
+            }
+
+            return Some(&query[start..i]);
+        } else {
+            i += 1;
+        }
+    }
+
     None
 }
 
@@ -47,26 +78,23 @@ pub fn resolve(app_config: &AppConfig, query: &str) -> String {
         let search_term = query.replacen(bang, "", 1);
         // info!("search term took {:?}", start.elapsed());
         // start = Instant::now();
-        if let Ok(cache) = BANG_CACHE.read() {
-            // info!("cache read took {:?}", start.elapsed());
+        let cache = BANG_CACHE.read();
+        // info!("cache read took {:?}", start.elapsed());
+        // start = Instant::now();
+        let key_lower = bang[1..].to_ascii_lowercase().to_owned();
+        if let Some(mut url_template) = cache.get(&key_lower).cloned() {
+            // info!("cache get took {:?}", start.elapsed());
             // start = Instant::now();
-            let key_lower = bang[1..].to_ascii_lowercase().to_owned();
-            if let Some(mut url_template) = cache.get(&key_lower).cloned() {
-                // info!("cache get took {:?}", start.elapsed());
-                // start = Instant::now();
-                return if find(url_template.as_bytes(), b"{{{s}}}").is_none() {
-                    // info!("find took {:?}", start.elapsed());
-                    url_template.push_str(&urlencoding::encode(search_term.trim()));
-                    url_template.replace("%2F", "/")
-                } else {
-                    // info!("find took {:?}", start.elapsed());
-                    url_template
-                        .replace("{{{s}}}", &urlencoding::encode(search_term.trim()))
-                        .replace("%2F", "/")
-                };
-            }
-        } else {
-            error!("Failed to acquire bang cache read lock.");
+            return if find(url_template.as_bytes(), b"{{{s}}}").is_none() {
+                // info!("find took {:?}", start.elapsed());
+                url_template.push_str(&urlencoding::encode(search_term.trim()));
+                url_template.replace("%2F", "/")
+            } else {
+                // info!("find took {:?}", start.elapsed());
+                url_template
+                    .replace("{{{s}}}", &urlencoding::encode(search_term.trim()))
+                    .replace("%2F", "/")
+            };
         }
     }
     // info!("default search took {:?}", start.elapsed());
@@ -108,8 +136,7 @@ pub fn update_bangs(app_config: &AppConfig) -> anyhow::Result<()> {
 /// If it fails to get the write lock on the bang cache or the last update time.
 fn update_cache(bang_entries: Vec<Bang>, app_config: &AppConfig) -> anyhow::Result<()> {
     let mut cache = BANG_CACHE
-        .write()
-        .map_err(|e| anyhow!("Failed to obtain bang cache write lock: {:?}", e))?;
+        .write();
     cache.clear();
     for bang in bang_entries {
         cache.insert(bang.trigger.clone(), bang.url_template.clone());
@@ -121,8 +148,7 @@ fn update_cache(bang_entries: Vec<Bang>, app_config: &AppConfig) -> anyhow::Resu
     }
     drop(cache);
     *LAST_UPDATE
-        .write()
-        .map_err(|e| anyhow!("Failed to obtain last update write lock: {:?}", e))? = Instant::now();
+        .write() = Instant::now();
     debug!("Bang commands updated successfully.");
     Ok(())
 }

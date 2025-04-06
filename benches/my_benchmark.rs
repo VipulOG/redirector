@@ -2,7 +2,7 @@ use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use rand::Rng;
 use rand::prelude::IndexedRandom;
 use redirector::config::AppConfig;
-use redirector::{resolve, update_bangs};
+use redirector::{get_bang, resolve, update_bangs};
 use std::net::IpAddr;
 use tracing::{Level, info};
 
@@ -81,6 +81,19 @@ fn benchmark_resolve(c: &mut Criterion) {
     });
 }
 
+fn benchmark_get_bang(c: &mut Criterion) {
+    let config = AppConfig::default();
+    update_bangs(&config).unwrap();
+
+    c.bench_function("get bang", |b| {
+        b.iter_batched(
+            generate_random_query,
+            |query| { get_bang(&*query); },
+            BatchSize::SmallInput,
+        )
+    });
+}
+
 fn custom_criterion() -> Criterion {
     // Increase the sample size to run the benchmarks more times.
     tracing_subscriber::fmt()
@@ -88,12 +101,12 @@ fn custom_criterion() -> Criterion {
         .with_writer(std::io::stderr)
         .init();
 
-    Criterion::default().sample_size(1000)
+    Criterion::default().sample_size(10_000)
 }
 
 criterion_group! {
     name = benches;
     config = custom_criterion();
-    targets = benchmark_resolve
+    targets = benchmark_resolve, benchmark_get_bang
 }
 criterion_main!(benches);

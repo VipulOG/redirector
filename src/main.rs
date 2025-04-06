@@ -58,39 +58,34 @@ async fn handler(
 }
 
 async fn list_bangs(State(app_config): State<AppConfig>) -> Html<String> {
-    if let Ok(cache) = BANG_CACHE.read() {
-        let mut html = String::from(
-            "<style>:root { background: #181818; color: #ffffff; font-family: monospace; } table { border-collapse: collapse; width: 100vw; } table th { text-align: left; padding: 1rem 0; font-size: 1.25rem; width: 100vw; } table tr { border-bottom: #ffffff10 solid 2px; } table tr:nth-child(2n) { background: #161616; } table tr:nth-child(2n+1) { background: #181818; }</style><html><head><title>Bang Commands</title></head><body><h1>Bang Commands</h1>",
-        );
+    let cache = BANG_CACHE.read();
+    let mut html = String::from(
+        "<style>:root { background: #181818; color: #ffffff; font-family: monospace; } table { border-collapse: collapse; width: 100vw; } table th { text-align: left; padding: 1rem 0; font-size: 1.25rem; width: 100vw; } table tr { border-bottom: #ffffff10 solid 2px; } table tr:nth-child(2n) { background: #161616; } table tr:nth-child(2n+1) { background: #181818; }</style><html><head><title>Bang Commands</title></head><body><h1>Bang Commands</h1>",
+    );
 
-        if let Some(bangs) = &app_config.bangs {
-            html.push_str(
-                "<h2>Configured Bangs</h2><table><th>Abbr.</th><th>Trigger</th><th>URL</th>",
-            );
-            for bang in bangs {
-                write!(
-                    html,
-                    "<tr><td><strong>{:?}</strong></td><td>{}</td><td>{}</td></tr>",
-                    bang.short_name, bang.trigger, bang.url_template
-                )
-                .expect("Failed to write to HTML string");
-            }
-            html.push_str("</table>");
-        }
-
-        html.push_str("<h2>Active Bangs</h2><table><th>Trigger</th><th>URL</th>");
-        for (trigger, url_template) in cache.iter() {
+    if let Some(bangs) = &app_config.bangs {
+        html.push_str("<h2>Configured Bangs</h2><table><th>Abbr.</th><th>Trigger</th><th>URL</th>");
+        for bang in bangs {
             write!(
                 html,
-                "<tr><td><strong>{trigger}</strong></td><td>{url_template}</td></tr>"
+                "<tr><td><strong>{:?}</strong></td><td>{}</td><td>{}</td></tr>",
+                bang.short_name, bang.trigger, bang.url_template
             )
             .expect("Failed to write to HTML string");
         }
-        html.push_str("</ul></body></html>");
-        Html(html)
-    } else {
-        Html("<html><head><title>Error</title></head><body><h1>Error</h1><p>Failed to acquire bang cache read lock.</p></body></html>".to_string())
+        html.push_str("</table>");
     }
+
+    html.push_str("<h2>Active Bangs</h2><table><th>Trigger</th><th>URL</th>");
+    for (trigger, url_template) in cache.iter() {
+        write!(
+            html,
+            "<tr><td><strong>{trigger}</strong></td><td>{url_template}</td></tr>"
+        )
+        .expect("Failed to write to HTML string");
+    }
+    html.push_str("</ul></body></html>");
+    Html(html)
 }
 
 #[tokio::main]

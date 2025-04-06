@@ -3,7 +3,7 @@ use rand::Rng;
 use rand::prelude::IndexedRandom;
 use rand::seq::SliceRandom;
 use redirector::config::AppConfig;
-use redirector::{resolve, update_bangs};
+use redirector::{get_bang, resolve, update_bangs};
 use std::net::IpAddr;
 use tracing::log::Level::Info;
 use tracing::{Level, info};
@@ -16,24 +16,30 @@ fn main() {
     divan::main();
 }
 
-#[divan::bench]
+#[divan::bench(sample_count = 10_000)]
 fn resolve_plain_query(bencher: Bencher) {
     let config = create_config();
     bencher.bench(|| resolve(&config, "just a regular search query"));
 }
 
-#[divan::bench]
+#[divan::bench(sample_count = 10_000)]
 fn resolve_query_with_bang(bencher: Bencher) {
     let config = create_config();
     bencher.bench(|| resolve(&config, "!gh just a regular search query"));
 }
 
-#[divan::bench]
+#[divan::bench(sample_count = 10_000)]
 fn resolve_random_generated_query(bencher: Bencher) {
     let config = create_config();
-    bencher.bench(|| {
-        let query = generate_random_query();
+    bencher.with_inputs(|| generate_random_query()).bench_values(|query| {
         resolve(&config, &query)
+    });
+}
+
+#[divan::bench(sample_count = 10_000)]
+fn get_bang_random(bencher: Bencher) {
+    bencher.with_inputs(|| generate_random_query()).bench_values(|query| {
+        get_bang(&*query);
     });
 }
 
