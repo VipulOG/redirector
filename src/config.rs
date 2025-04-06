@@ -3,6 +3,8 @@ use crate::cli::{Cli, SubCommand};
 use serde::Deserialize;
 use std::net::IpAddr;
 
+const DEFAULT_SEARCH: &str = "https://www.qwant.com/?q={}";
+
 /// Configuration read from the file.
 #[derive(Deserialize, Debug, Default)]
 pub struct FileConfig {
@@ -80,7 +82,7 @@ impl FileConfig {
             default_search: config
                 .default_search
                 .or(self.default_search)
-                .unwrap_or_else(|| "https://www.startpage.com/do/dsearch?query={}".to_string()),
+                .unwrap_or_else(|| DEFAULT_SEARCH.to_string()),
             bangs: self.bangs,
         }
     }
@@ -92,7 +94,7 @@ impl Default for AppConfig {
             port: 3000,
             ip: IpAddr::from([0, 0, 0, 0]),
             bangs_url: "https://duckduckgo.com/bang.js".to_string(),
-            default_search: "https://www.startpage.com/do/dsearch?query={}".to_string(),
+            default_search: DEFAULT_SEARCH.to_string(),
             bangs: None,
         }
     }

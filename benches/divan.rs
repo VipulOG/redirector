@@ -1,10 +1,47 @@
-use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
+use divan::{Bencher, black_box};
 use rand::Rng;
 use rand::prelude::IndexedRandom;
+use rand::seq::SliceRandom;
 use redirector::config::AppConfig;
 use redirector::{resolve, update_bangs};
 use std::net::IpAddr;
+use tracing::log::Level::Info;
 use tracing::{Level, info};
+
+fn main() {
+    tracing_subscriber::fmt()
+        .with_max_level(Level::INFO)
+        .with_writer(std::io::stderr)
+        .init();
+    divan::main();
+}
+
+#[divan::bench]
+fn resolve_plain_query(bencher: Bencher) {
+    let config = create_config();
+    bencher.bench(|| resolve(&config, "just a regular search query"));
+}
+
+#[divan::bench]
+fn resolve_query_with_bang(bencher: Bencher) {
+    let config = create_config();
+    bencher.bench(|| resolve(&config, "!gh just a regular search query"));
+}
+
+#[divan::bench]
+fn resolve_random_generated_query(bencher: Bencher) {
+    let config = create_config();
+    bencher.bench(|| {
+        let query = generate_random_query();
+        resolve(&config, &query)
+    });
+}
+
+fn create_config() -> AppConfig {
+    let config = AppConfig::default();
+    update_bangs(&config).unwrap();
+    config
+}
 
 fn generate_random_query() -> String {
     let bang_commands = [
@@ -62,38 +99,3 @@ fn generate_random_query() -> String {
     }
 }
 
-fn benchmark_resolve(c: &mut Criterion) {
-    let config = AppConfig::default();
-    update_bangs(&config).unwrap();
-
-    c.bench_function("resolve plain query", |b| {
-        b.iter(|| resolve(&config, "just a regular search query"))
-    });
-    c.bench_function("resolve query with bang", |b| {
-        b.iter(|| resolve(&config, "!gh just a regular search query"))
-    });
-    c.bench_function("resolve random generated query", |b| {
-        b.iter_batched(
-            generate_random_query,
-            |query| resolve(&config, &query),
-            BatchSize::SmallInput,
-        )
-    });
-}
-
-fn custom_criterion() -> Criterion {
-    // Increase the sample size to run the benchmarks more times.
-    tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
-        .with_writer(std::io::stderr)
-        .init();
-
-    Criterion::default().sample_size(1000)
-}
-
-criterion_group! {
-    name = benches;
-    config = custom_criterion();
-    targets = benchmark_resolve
-}
-criterion_main!(benches);

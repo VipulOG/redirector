@@ -12,6 +12,7 @@ use redirector::cli::{Cli, SubCommand};
 use redirector::config::{AppConfig, FileConfig};
 use redirector::{BANG_CACHE, resolve, update_bangs};
 use serde::Deserialize;
+use std::fmt::Write;
 use std::fs::read_to_string;
 use std::{
     env,
@@ -33,7 +34,7 @@ async fn periodic_update(app_config: AppConfig) {
     let mut interval = interval(Duration::from_secs(24 * 60 * 60)); // 24 hours
     loop {
         interval.tick().await;
-        if let Err(e) = update_bangs(&app_config).await {
+        if let Err(e) = update_bangs(&app_config) {
             error!("Failed to update bang commands: {}", e);
         }
     }
@@ -49,8 +50,8 @@ async fn handler(
         |query| {
             let start = Instant::now();
             let redirect_url = resolve(&app_config, &query);
-            info!("Redirecting '{}' to '{}'.", query, redirect_url);
             debug!("Request completed in {:?}", start.elapsed());
+            info!("Redirecting '{}' to '{}'.", query, redirect_url);
             Redirect::to(&redirect_url)
         },
     )
@@ -67,19 +68,23 @@ async fn list_bangs(State(app_config): State<AppConfig>) -> Html<String> {
                 "<h2>Configured Bangs</h2><table><th>Abbr.</th><th>Trigger</th><th>URL</th>",
             );
             for bang in bangs {
-                html.push_str(&format!(
+                write!(
+                    html,
                     "<tr><td><strong>{:?}</strong></td><td>{}</td><td>{}</td></tr>",
                     bang.short_name, bang.trigger, bang.url_template
-                ));
+                )
+                .expect("Failed to write to HTML string");
             }
             html.push_str("</table>");
         }
 
         html.push_str("<h2>Active Bangs</h2><table><th>Trigger</th><th>URL</th>");
         for (trigger, url_template) in cache.iter() {
-            html.push_str(&format!(
+            write!(
+                html,
                 "<tr><td><strong>{trigger}</strong></td><td>{url_template}</td></tr>"
-            ));
+            )
+            .expect("Failed to write to HTML string");
         }
         html.push_str("</ul></body></html>");
         Html(html)
@@ -160,7 +165,7 @@ async fn main() {
             axum::serve(listener, app).await.unwrap();
         }
         Some(SubCommand::Resolve { query }) => {
-            if let Err(e) = update_bangs(&app_config).await {
+            if let Err(e) = update_bangs(&app_config) {
                 error!("Failed to update bang commands: {}", e);
             }
             println!("{}", resolve(&app_config, &query));
