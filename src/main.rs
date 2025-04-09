@@ -3,14 +3,17 @@ mod cli;
 mod config;
 
 use axum::extract::State;
-use axum::response::Html;
-use axum::{Router, extract::Query, response::Redirect, routing::get};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::response::{Html, IntoResponse};
+use axum::{Json, Router, extract::Query, response::Redirect, routing::get};
 use clap::{CommandFactory, Parser};
 use clap_complete::generate;
+use heck::ToTitleCase;
 use redirector::cli::SubCommand::Completions;
 use redirector::cli::{Cli, SubCommand};
 use redirector::config::{AppConfig, FileConfig};
 use redirector::{BANG_CACHE, resolve, update_bangs};
+use reqwest::Client;
 use serde::Deserialize;
 use std::fmt::Write;
 use std::fs::read_to_string;
@@ -34,7 +37,7 @@ async fn periodic_update(app_config: AppConfig) {
     let mut interval = interval(Duration::from_secs(24 * 60 * 60)); // 24 hours
     loop {
         interval.tick().await;
-        if let Err(e) = update_bangs(&app_config) {
+        if let Err(e) = update_bangs(&app_config).await {
             error!("Failed to update bang commands: {}", e);
         }
     }
@@ -58,9 +61,11 @@ async fn handler(
 }
 
 async fn list_bangs(State(app_config): State<AppConfig>) -> Html<String> {
+    let pkg_name = env!("CARGO_PKG_NAME").to_title_case();
     let mut html = String::from(
-        "<style>:root { background: #181818; color: #ffffff; font-family: monospace; } table { border-collapse: collapse; width: 100vw; } table th { text-align: left; padding: 1rem 0; font-size: 1.25rem; width: 100vw; } table tr { border-bottom: #ffffff10 solid 2px; } table tr:nth-child(2n) { background: #161616; } table tr:nth-child(2n+1) { background: #181818; }</style><html><head><title>Bang Commands</title></head><body><h1>Bang Commands</h1>",
+        "<style>:root { background: #181818; color: #ffffff; font-family: monospace; } table { border-collapse: collapse; width: 100vw; } table th { text-align: left; padding: 1rem 0; font-size: 1.25rem; width: 100vw; } table tr { border-bottom: #ffffff10 solid 2px; } table tr:nth-child(2n) { background: #161616; } table tr:nth-child(2n+1) { background: #181818; }</style><html>",
     );
+    html += format!(r#"<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><link rel="search" type="application/opensearchdescription+xml" title="{pkg_name}" href="/opensearch.xml"/><title>Bang Commands</title></head><body><h1>Bang Commands</h1>"#).as_str();
 
     if let Some(bangs) = &app_config.bangs {
         html.push_str("<h2>Configured Bangs</h2><table><th>Abbr.</th><th>Trigger</th><th>URL</th>");
@@ -85,6 +90,67 @@ async fn list_bangs(State(app_config): State<AppConfig>) -> Html<String> {
     }
     html.push_str("</ul></body></html>");
     Html(html)
+}
+
+async fn opensearch(State(app_config): State<AppConfig>) -> impl IntoResponse {
+    let pkg_name = env!("CARGO_PKG_NAME");
+    let pkg_description = env!("CARGO_PKG_DESCRIPTION");
+    let opensearch_xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<OpenSearchDescription
+  xmlns="http://a9.com/-/spec/opensearch/1.1/"
+  xmlns:moz="http://www.mozilla.org/2006/browser/search/">
+  <ShortName>{}</ShortName>
+  <Description>{}</Description>
+  <InputEncoding>UTF-8</InputEncoding>
+  <Url type="text/html" method="GET" template="http://{}:{}/?q={{searchTerms}}" />
+  <Url type="application/x-suggestions+json" method="GET" template="http://{}:{}/suggest?q={{searchTerms}}" />
+</OpenSearchDescription>"#,
+        pkg_name.to_title_case(),
+        pkg_description,
+        app_config.ip,
+        app_config.port,
+        app_config.ip,
+        app_config.port
+    );
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/opensearchdescription+xml"),
+    );
+    (StatusCode::OK, headers, opensearch_xml)
+}
+
+async fn suggestions_proxy(
+    Query(params): Query<SearchParams>,
+    State(app_config): State<AppConfig>,
+) -> impl IntoResponse {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+
+    if let Some(query) = params.query {
+        let suggest_api_url = app_config.search_suggestions.replace("{}", &query);
+
+        match Client::new().get(&suggest_api_url).send().await {
+            Ok(response) => {
+                if let Ok(json) = response.json::<serde_json::Value>().await {
+                    return (StatusCode::OK, headers, Json(json));
+                }
+            }
+            Err(e) => {
+                error!("Failed to fetch suggestions from Brave API: {}", e);
+            }
+        }
+    }
+
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        headers,
+        Json(serde_json::json!([])),
+    )
 }
 
 #[tokio::main]
@@ -146,6 +212,8 @@ async fn main() {
             let app = Router::new()
                 .route("/", get(handler))
                 .route("/bangs", get(list_bangs))
+                .route("/opensearch.xml", get(opensearch))
+                .route("/suggest", get(suggestions_proxy))
                 .with_state(app_config.clone());
             let addr = SocketAddr::new(app_config.ip, app_config.port);
             let listener = match TcpListener::bind(addr).await {
@@ -159,7 +227,7 @@ async fn main() {
             axum::serve(listener, app).await.unwrap();
         }
         Some(SubCommand::Resolve { query }) => {
-            if let Err(e) = update_bangs(&app_config) {
+            if let Err(e) = update_bangs(&app_config).await {
                 error!("Failed to update bang commands: {}", e);
             }
             println!("{}", resolve(&app_config, &query));

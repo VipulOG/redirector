@@ -31,7 +31,7 @@ pub enum Category {
     Entertainment,
     Multimedia,
     News,
-    #[serde(rename = "Online Services")]
+    #[serde(alias = "Online Services", rename = "Online Services")]
     OnlineServices,
     Research,
     Shopping,

@@ -1,9 +1,12 @@
-use crate::bang::Bang;
-use crate::cli::{Cli, SubCommand};
-use serde::Deserialize;
 use std::net::IpAddr;
 
+use serde::Deserialize;
+
+use crate::bang::Bang;
+use crate::cli::{Cli, SubCommand};
+
 const DEFAULT_SEARCH: &str = "https://www.qwant.com/?q={}";
+const DEFAULT_SEARCH_SUGGESTIONS: &str = "https://search.brave.com/api/suggest?q={}";
 
 /// Configuration read from the file.
 #[derive(Deserialize, Debug, Default)]
@@ -12,6 +15,7 @@ pub struct FileConfig {
     pub ip: Option<IpAddr>,
     pub bangs_url: Option<String>,
     pub default_search: Option<String>,
+    pub search_suggestions: Option<String>,
     pub bangs: Option<Vec<Bang>>,
 }
 
@@ -22,16 +26,18 @@ pub struct Config {
     pub ip: Option<IpAddr>,
     pub bangs_url: Option<String>,
     pub default_search: Option<String>,
+    pub search_suggestions: Option<String>,
 }
 
 /// Final application configuration.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub struct AppConfig {
     pub port: u16,
     pub ip: IpAddr,
     pub bangs_url: String,
     pub default_search: String,
+    pub search_suggestions: String,
     pub bangs: Option<Vec<Bang>>,
 }
 
@@ -46,6 +52,7 @@ impl Config {
             ip: None,
             bangs_url: None,
             default_search: None,
+            search_suggestions: None,
             bangs: None,
         });
         AppConfig {
@@ -59,6 +66,10 @@ impl Config {
                 .default_search
                 .or(file.default_search)
                 .unwrap_or(default.default_search),
+            search_suggestions: self
+                .search_suggestions
+                .or(file.search_suggestions)
+                .unwrap_or(default.search_suggestions),
             bangs: file.bangs,
         }
     }
@@ -83,6 +94,10 @@ impl FileConfig {
                 .default_search
                 .or(self.default_search)
                 .unwrap_or_else(|| DEFAULT_SEARCH.to_string()),
+            search_suggestions: config
+                .search_suggestions
+                .or(self.search_suggestions)
+                .unwrap_or_else(|| DEFAULT_SEARCH_SUGGESTIONS.to_string()),
             bangs: self.bangs,
         }
     }
@@ -95,6 +110,7 @@ impl Default for AppConfig {
             ip: IpAddr::from([0, 0, 0, 0]),
             bangs_url: "https://duckduckgo.com/bang.js".to_string(),
             default_search: DEFAULT_SEARCH.to_string(),
+            search_suggestions: DEFAULT_SEARCH_SUGGESTIONS.to_string(),
             bangs: None,
         }
     }
@@ -108,12 +124,14 @@ impl From<Cli> for Config {
                 ip,
                 bangs_url: cli.bangs_url,
                 default_search: cli.default_search,
+                search_suggestions: cli.search_suggestions,
             },
             Some(SubCommand::Resolve { query: _ }) => Self {
                 port: None,
                 ip: None,
                 bangs_url: cli.bangs_url,
                 default_search: cli.default_search,
+                search_suggestions: cli.search_suggestions,
             },
             _ => Self::default(),
         }
