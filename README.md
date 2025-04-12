@@ -66,7 +66,7 @@ relevance = 0                                        # currently unused
 short_name = "Bangs Page"                            # currently unused
 subcategory = "Fun stuff"                            # currenly unused
 trigger = "bang"
-url_template = "http://127.0.0.1/bangs?parameter={}" # {} gets replaced with the search term
+url_template = "http://127.0.0.1/bangs?parameter={{{s}}}" # {{{s}}} gets replaced with the search term
 ```
 
 ## License
