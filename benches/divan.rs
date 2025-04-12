@@ -43,9 +43,12 @@ fn get_bang_random(bencher: Bencher) {
 }
 
 fn create_config() -> AppConfig {
-    let config = AppConfig::default();
-    update_bangs(&config).unwrap();
-    config
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let config = AppConfig::default();
+        update_bangs(&config).await.unwrap();
+        config
+    })
 }
 
 fn generate_random_query() -> String {

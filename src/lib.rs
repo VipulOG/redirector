@@ -9,7 +9,8 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
-use tracing::debug;
+use tokio::time::interval;
+use tracing::{debug, error};
 
 pub static BANG_CACHE: LazyLock<RwLock<HashMap<String, String>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
@@ -128,6 +129,16 @@ pub fn resolve(app_config: &AppConfig, query: &str) -> String {
     app_config
         .default_search
         .replace("{}", &urlencoding::encode(query))
+}
+
+pub async fn periodic_update(app_config: AppConfig) {
+    let mut interval = interval(Duration::from_secs(24 * 60 * 60)); // 24 hours
+    loop {
+        interval.tick().await;
+        if let Err(e) = update_bangs(&app_config).await {
+            error!("Failed to update bang commands: {}", e);
+        }
+    }
 }
 
 /// Update the bang cache with the latest bang commands.

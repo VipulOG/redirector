@@ -1,30 +1,20 @@
-mod bang;
-mod cli;
-mod config;
-
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse};
+use axum::routing::post;
 use axum::{Json, Router, extract::Query, response::Redirect, routing::get};
 use clap::{CommandFactory, Parser};
 use clap_complete::generate;
 use heck::ToTitleCase;
 use redirector::cli::SubCommand::Completions;
 use redirector::cli::{Cli, SubCommand};
-use redirector::config::{AppConfig, FileConfig};
-use redirector::{BANG_CACHE, resolve, update_bangs};
+use redirector::config::{AppState, append_file_config, get_file_config};
+use redirector::{BANG_CACHE, periodic_update, resolve, update_bangs};
 use reqwest::Client;
 use serde::Deserialize;
 use std::fmt::Write;
-use std::fs::read_to_string;
-use std::{
-    env,
-    net::SocketAddr,
-    path::Path,
-    time::{Duration, Instant},
-};
+use std::{env, net::SocketAddr, time::Instant};
 use tokio::net::TcpListener;
-use tokio::time::interval;
 use tracing::{Level, debug, error, info};
 
 #[derive(Debug, Deserialize)]
@@ -33,26 +23,16 @@ struct SearchParams {
     query: Option<String>,
 }
 
-async fn periodic_update(app_config: AppConfig) {
-    let mut interval = interval(Duration::from_secs(24 * 60 * 60)); // 24 hours
-    loop {
-        interval.tick().await;
-        if let Err(e) = update_bangs(&app_config).await {
-            error!("Failed to update bang commands: {}", e);
-        }
-    }
-}
-
 /// Handler function that extracts the `q` parameter and redirects accordingly
 async fn handler(
     Query(params): Query<SearchParams>,
-    State(app_config): State<AppConfig>,
+    State(app_state): State<AppState>,
 ) -> Redirect {
     params.query.map_or_else(
         || Redirect::to("/bangs"),
         |query| {
             let start = Instant::now();
-            let redirect_url = resolve(&app_config, &query);
+            let redirect_url = resolve(&app_state.get_config(), &query);
             debug!("Request completed in {:?}", start.elapsed());
             info!("Redirecting '{}' to '{}'.", query, redirect_url);
             Redirect::to(&redirect_url)
@@ -60,14 +40,14 @@ async fn handler(
     )
 }
 
-async fn list_bangs(State(app_config): State<AppConfig>) -> Html<String> {
+async fn list_bangs(State(app_state): State<AppState>) -> Html<String> {
     let pkg_name = env!("CARGO_PKG_NAME").to_title_case();
     let mut html = String::from(
         "<style>:root { background: #181818; color: #ffffff; font-family: monospace; } table { border-collapse: collapse; width: 100vw; } table th { text-align: left; padding: 1rem 0; font-size: 1.25rem; width: 100vw; } table tr { border-bottom: #ffffff10 solid 2px; } table tr:nth-child(2n) { background: #161616; } table tr:nth-child(2n+1) { background: #181818; }</style><html>",
     );
     html += format!(r#"<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><link rel="search" type="application/opensearchdescription+xml" title="{pkg_name}" href="/opensearch.xml"/><title>Bang Commands</title></head><body><h1>Bang Commands</h1>"#).as_str();
 
-    if let Some(bangs) = &app_config.bangs {
+    if let Some(bangs) = &app_state.get_config().bangs {
         html.push_str("<h2>Configured Bangs</h2><table><th>Abbr.</th><th>Trigger</th><th>URL</th>");
         for bang in bangs {
             write!(
@@ -92,9 +72,10 @@ async fn list_bangs(State(app_config): State<AppConfig>) -> Html<String> {
     Html(html)
 }
 
-async fn opensearch(State(app_config): State<AppConfig>) -> impl IntoResponse {
+async fn opensearch(State(app_state): State<AppState>) -> impl IntoResponse {
     let pkg_name = env!("CARGO_PKG_NAME");
     let pkg_description = env!("CARGO_PKG_DESCRIPTION");
+    let app_config = app_state.get_config();
     let opensearch_xml = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <OpenSearchDescription
@@ -123,7 +104,7 @@ async fn opensearch(State(app_config): State<AppConfig>) -> impl IntoResponse {
 
 async fn suggestions_proxy(
     Query(params): Query<SearchParams>,
-    State(app_config): State<AppConfig>,
+    State(app_state): State<AppState>,
 ) -> impl IntoResponse {
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -132,7 +113,10 @@ async fn suggestions_proxy(
     );
 
     if let Some(query) = params.query {
-        let suggest_api_url = app_config.search_suggestions.replace("{}", &query);
+        let suggest_api_url = app_state
+            .get_config()
+            .search_suggestions
+            .replace("{}", &query);
 
         match Client::new().get(&suggest_api_url).send().await {
             Ok(response) => {
@@ -153,6 +137,39 @@ async fn suggestions_proxy(
     )
 }
 
+// endpoint to add a new bang to the config file
+async fn add_bang(
+    Query(params): Query<redirector::bang::Bang>,
+    State(app_state): State<AppState>,
+) -> impl IntoResponse {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+
+    let mut config = app_state.config.write();
+    if let Some(bangs) = &mut config.bangs {
+        append_file_config(params.clone());
+        bangs.push(params.clone());
+        if let Some(mut cache) = BANG_CACHE.try_write() {
+            cache.insert(params.trigger, params.url_template);
+        }
+        return (
+            StatusCode::OK,
+            headers,
+            Json(serde_json::json!({ "status": "success" })),
+        );
+    }
+    drop(config);
+
+    (
+        StatusCode::BAD_REQUEST,
+        headers,
+        Json(serde_json::json!({ "status": "failed" })),
+    )
+}
+
 #[tokio::main]
 async fn main() {
     let cli_config = Cli::parse();
@@ -167,43 +184,13 @@ async fn main() {
         .with_writer(std::io::stderr)
         .init();
 
-    let home_dir = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let config_path = Path::new(&home_dir)
-        .join(".config")
-        .join("redirector")
-        .join("config.toml");
-
-    // Attempt to load the file configuration if it exists.
-    let file_config = if config_path.exists() {
-        match read_to_string(&config_path) {
-            Ok(contents) => match toml::from_str::<FileConfig>(&contents) {
-                Ok(conf) => Some(conf),
-                Err(e) => {
-                    error!(
-                        "Failed to parse configuration file at {}: {}",
-                        config_path.display(),
-                        e
-                    );
-                    None
-                }
-            },
-            Err(e) => {
-                error!(
-                    "Failed to read configuration file at {}: {}",
-                    config_path.display(),
-                    e
-                );
-                None
-            }
-        }
-    } else {
-        debug!("Configuration file not found at {}.", config_path.display());
-        None
-    };
+    let file_config = get_file_config();
 
     let app_config = file_config
         .unwrap_or_default()
         .merge(cli_config.clone().into());
+
+    let app_state = AppState::new(app_config.clone());
 
     match cli_config.command {
         Some(SubCommand::Serve { .. }) | None => {
@@ -214,7 +201,8 @@ async fn main() {
                 .route("/bangs", get(list_bangs))
                 .route("/opensearch.xml", get(opensearch))
                 .route("/suggest", get(suggestions_proxy))
-                .with_state(app_config.clone());
+                .route("/add_bang", post(add_bang))
+                .with_state(app_state);
             let addr = SocketAddr::new(app_config.ip, app_config.port);
             let listener = match TcpListener::bind(addr).await {
                 Ok(listener) => listener,
