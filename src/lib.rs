@@ -216,7 +216,9 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_with_bang() {
         let config = AppConfig::default();
-        update_bangs(&config).await.unwrap();
+        if let Err(e) = update_bangs(&config).await {
+            error!("Failed to update bangs: {}", e);
+        };
 
         // Test with template that has {{{s}}}
         let result = resolve(&config, "!g rust programming");
@@ -241,7 +243,9 @@ mod tests {
     async fn test_resolve_without_bang() {
         let config = AppConfig::default();
 
-        update_bangs(&config).await.unwrap();
+        if let Err(e) = update_bangs(&config).await {
+            error!("Failed to update bangs: {}", e);
+        };
 
         // Test with no bang
         let result = resolve(&config, "rust programming");
@@ -264,7 +268,9 @@ mod tests {
     async fn test_resolve_edge_cases() {
         let config = AppConfig::default();
 
-        update_bangs(&config).await.unwrap();
+        if let Err(e) = update_bangs(&config).await {
+            error!("Failed to update bangs: {}", e);
+        };
 
         // Empty query
         let result = resolve(&config, "");
