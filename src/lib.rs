@@ -4,6 +4,7 @@ pub mod config;
 
 use crate::bang::Bang;
 use crate::config::AppConfig;
+use memchr::memchr;
 use parking_lot::RwLock;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -41,26 +42,20 @@ pub fn get_bang(query: &str) -> Option<&str> {
         }
     }
 
-    // Simple linear scan for bangs following spaces
-    let mut i = 1;
-    while i < len {
-        if bytes[i] == b'!' && bytes[i - 1] == b' ' {
-            let start = i;
-            i += 1;
+    let mut offset = 0;
 
-            // Skip if no characters after '!'
-            if i == len || bytes[i] == b' ' {
-                continue;
+    while let Some(pos) = memchr(b'!', &bytes[offset..]) {
+        let i = offset + pos;
+        // must be preceded by a space
+        if i > 0 && bytes[i - 1] == b' ' {
+            // skip if nothing or space right after '!'
+            if i + 1 < len && bytes[i + 1] != b' ' {
+                // find next space (or end of slice)
+                let end = memchr(b' ', &bytes[i + 1..]).map_or(len, |e| i + 1 + e);
+                return Some(&query[i..end]);
             }
-
-            // Find end of bang
-            while i < len && bytes[i] != b' ' {
-                i += 1;
-            }
-
-            return Some(&query[start..i]);
         }
-        i += 1;
+        offset = i + 1;
     }
 
     None
