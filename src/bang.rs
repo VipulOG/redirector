@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::fmt::Display;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Bang {
@@ -31,10 +32,25 @@ pub enum Category {
     Entertainment,
     Multimedia,
     News,
-    #[serde(rename = "Online Services")]
+    #[serde(alias = "Online Services", rename = "Online Services")]
     OnlineServices,
     Research,
     Shopping,
     Tech,
     Translation,
+}
+
+impl Display for Category {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Entertainment => write!(f, "Entertainment"),
+            Self::Multimedia => write!(f, "Multimedia"),
+            Self::News => write!(f, "News"),
+            Self::OnlineServices => write!(f, "Online Services"),
+            Self::Research => write!(f, "Research"),
+            Self::Shopping => write!(f, "Shopping"),
+            Self::Tech => write!(f, "Tech"),
+            Self::Translation => write!(f, "Translation"),
+        }
+    }
 }

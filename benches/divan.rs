@@ -4,6 +4,7 @@ use rand::prelude::IndexedRandom;
 use redirector::config::AppConfig;
 use redirector::{get_bang, resolve, update_bangs};
 use tracing::Level;
+use tracing::error;
 
 fn main() {
     tracing_subscriber::fmt()
@@ -43,9 +44,14 @@ fn get_bang_random(bencher: Bencher) {
 }
 
 fn create_config() -> AppConfig {
-    let config = AppConfig::default();
-    update_bangs(&config).unwrap();
-    config
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let config = AppConfig::default();
+        if let Err(e) = update_bangs(&config).await {
+            error!("Failed to update bangs: {}", e);
+        };
+        config
+    })
 }
 
 fn generate_random_query() -> String {

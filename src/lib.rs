@@ -4,12 +4,14 @@ pub mod config;
 
 use crate::bang::Bang;
 use crate::config::AppConfig;
+use memchr::memchr;
 use parking_lot::RwLock;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
-use tracing::{debug, info};
+use tokio::time::interval;
+use tracing::{debug, error};
 
 pub static BANG_CACHE: LazyLock<RwLock<HashMap<String, String>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
@@ -40,26 +42,20 @@ pub fn get_bang(query: &str) -> Option<&str> {
         }
     }
 
-    // Simple linear scan for bangs following spaces
-    let mut i = 1;
-    while i < len {
-        if bytes[i] == b'!' && bytes[i - 1] == b' ' {
-            let start = i;
-            i += 1;
+    let mut offset = 0;
 
-            // Skip if no characters after '!'
-            if i == len || bytes[i] == b' ' {
-                continue;
+    while let Some(pos) = memchr(b'!', &bytes[offset..]) {
+        let i = offset + pos;
+        // must be preceded by a space
+        if i > 0 && bytes[i - 1] == b' ' {
+            // skip if nothing or space right after '!'
+            if i + 1 < len && bytes[i + 1] != b' ' {
+                // find next space (or end of slice)
+                let end = memchr(b' ', &bytes[i + 1..]).map_or(len, |e| i + 1 + e);
+                return Some(&query[i..end]);
             }
-
-            // Find end of bang
-            while i < len && bytes[i] != b' ' {
-                i += 1;
-            }
-
-            return Some(&query[start..i]);
         }
-        i += 1;
+        offset = i + 1;
     }
 
     None
@@ -130,11 +126,21 @@ pub fn resolve(app_config: &AppConfig, query: &str) -> String {
         .replace("{}", &urlencoding::encode(query))
 }
 
+pub async fn periodic_update(app_config: AppConfig) {
+    let mut interval = interval(Duration::from_secs(24 * 60 * 60)); // 24 hours
+    loop {
+        interval.tick().await;
+        if let Err(e) = update_bangs(&app_config).await {
+            error!("Failed to update bang commands: {}", e);
+        }
+    }
+}
+
 /// Update the bang cache with the latest bang commands.
 ///
 /// # Errors
 /// If it fails to update the bang cache.
-pub fn update_bangs(app_config: &AppConfig) -> anyhow::Result<()> {
+pub async fn update_bangs(app_config: &AppConfig) -> anyhow::Result<()> {
     let cache_path = std::env::temp_dir().join("bang_cache.json");
     let cache_age_limit = Duration::from_secs(24 * 60 * 60);
 
@@ -143,7 +149,7 @@ pub fn update_bangs(app_config: &AppConfig) -> anyhow::Result<()> {
             if modified.elapsed()? < cache_age_limit {
                 if let Ok(contents) = std::fs::read_to_string(&cache_path) {
                     let bang_entries: Vec<Bang> = serde_json::from_str(&contents)?;
-                    info!("Bang cache is up to date.");
+                    debug!("Bang cache is up to date.");
                     update_cache(bang_entries, app_config);
                     return Ok(());
                 }
@@ -151,7 +157,7 @@ pub fn update_bangs(app_config: &AppConfig) -> anyhow::Result<()> {
         }
     }
 
-    let response = reqwest::blocking::get(&app_config.bangs_url)?.text()?;
+    let response = reqwest::get(&app_config.bangs_url).await?.text().await?;
     let bang_entries: Vec<Bang> = serde_json::from_str(&response)?;
 
     std::fs::write(cache_path, &response)?;
@@ -183,8 +189,8 @@ fn update_cache(bang_entries: Vec<Bang>, app_config: &AppConfig) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_get_bang() {
+    #[tokio::test]
+    async fn test_get_bang() {
         // Valid bang queries
         assert_eq!(get_bang("!gh search term"), Some("!gh"));
         assert_eq!(get_bang("search !gh term"), Some("!gh"));
@@ -202,10 +208,12 @@ mod tests {
         assert_eq!(get_bang("a!!gh"), None); // No space before !
     }
 
-    #[test]
-    fn test_resolve_with_bang() {
+    #[tokio::test]
+    async fn test_resolve_with_bang() {
         let config = AppConfig::default();
-        update_bangs(&config).unwrap();
+        if let Err(e) = update_bangs(&config).await {
+            error!("Failed to update bangs: {}", e);
+        };
 
         // Test with template that has {{{s}}}
         let result = resolve(&config, "!g rust programming");
@@ -226,11 +234,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_resolve_without_bang() {
+    #[tokio::test]
+    async fn test_resolve_without_bang() {
         let config = AppConfig::default();
 
-        update_bangs(&config).unwrap();
+        if let Err(e) = update_bangs(&config).await {
+            error!("Failed to update bangs: {}", e);
+        };
 
         // Test with no bang
         let result = resolve(&config, "rust programming");
@@ -249,11 +259,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_resolve_edge_cases() {
+    #[tokio::test]
+    async fn test_resolve_edge_cases() {
         let config = AppConfig::default();
 
-        update_bangs(&config).unwrap();
+        if let Err(e) = update_bangs(&config).await {
+            error!("Failed to update bangs: {}", e);
+        };
 
         // Empty query
         let result = resolve(&config, "");

@@ -4,6 +4,7 @@ use rand::prelude::IndexedRandom;
 use redirector::config::AppConfig;
 use redirector::{get_bang, resolve, update_bangs};
 use tracing::Level;
+use tracing::error;
 
 fn generate_random_query() -> String {
     let bang_commands = [
@@ -61,9 +62,19 @@ fn generate_random_query() -> String {
     }
 }
 
+fn create_config() -> AppConfig {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        let config = AppConfig::default();
+        if let Err(e) = update_bangs(&config).await {
+            error!("Failed to update bangs: {}", e);
+        };
+        config
+    })
+}
+
 fn benchmark_resolve(c: &mut Criterion) {
-    let config = AppConfig::default();
-    update_bangs(&config).unwrap();
+    let config = create_config();
 
     c.bench_function("resolve plain query", |b| {
         b.iter(|| resolve(&config, "just a regular search query"))
@@ -81,8 +92,7 @@ fn benchmark_resolve(c: &mut Criterion) {
 }
 
 fn benchmark_get_bang(c: &mut Criterion) {
-    let config = AppConfig::default();
-    update_bangs(&config).unwrap();
+    let config = create_config();
 
     c.bench_function("get bang", |b| {
         b.iter_batched(

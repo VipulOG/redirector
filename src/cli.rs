@@ -16,6 +16,10 @@ pub struct Cli {
     /// Default search engine URL template (use '{}' as placeholder for the query)
     #[arg(short, long)]
     pub default_search: Option<String>,
+
+    /// Search suggestions URL template (use '{}' as placeholder for the query)
+    #[arg(short, long)]
+    pub search_suggestions: Option<String>,
 }
 
 #[derive(Subcommand, Debug, Clone)]
